@@ -1,0 +1,130 @@
+﻿@page "/onboarding/{workflowInstanceId}"
+
+@using Microsoft.AspNetCore.SignalR.Client
+@using Elsa.OnBoardingProcess.PoC.Services
+@using Elsa.OnBoardingProcess.PoC.Models
+@using Elsa.OnBoardingProcess.PoC.Responses
+@using Newtonsoft.Json.Linq
+@using Elsa.OnBoardingProcess.PoC.Components
+
+@implements IDisposable
+
+@inject UserTaskService userTaskService
+@inject HubConnection HubConnection
+
+@if (HasUserTask())
+{
+    <div class="border border-primary my-1 p-1">
+        <DynamicComponent @ref="dc" Type="@Type.GetType(userTask.UIDefinition)"/>
+        @if (userTask.AllowPrevious)
+        {
+            <button class="btn btn-primary" onclick="@GoToPrevious">Previous</button>
+        }
+        <button class="btn btn-primary" onclick="@Continue">Continue</button>
+    </div>
+}
+else
+{
+    <h2>Processing work...</h2>
+    <p>@latestNotification?.Description</p>
+}
+
+@code {
+
+    private JToken dynamicComponentData;
+
+    private DynamicComponent dc;
+
+    [Parameter]
+    public string workflowInstanceId { get; set; } = string.Empty;
+
+    private UserTaskViewModel? userTask;
+
+    private WorkflowInstanceInfo? latestNotification;
+    private WorkflowInstanceUserTaskViewModel workflowInstance;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadTask();
+        
+        await HubConnection.InvokeAsync("LeaveWorkflowInstanceGroup", workflowInstanceId);
+        
+        //setup notifications listener
+        HubConnection.On<WorkflowInstanceInfo>("WorkflowInstanceUpdate", async notification => { await UpdateForNotification(notification); });
+        await HubConnection.InvokeAsync("JoinWorkflowInstanceGroup", workflowInstanceId);
+    }
+    
+    protected override void OnAfterRender(bool firstRender)
+    {
+        if (dc != null && dc.Instance != null && workflowInstance.Metadata.ContainsKey(workflowInstance.CurrentActivityId))
+        {
+            var component = dc.Instance as ICustomDynamicComponent;
+            component.SetValue(workflowInstance.Metadata[workflowInstance.CurrentActivityId]);
+        }
+    }
+
+    private async Task GoToPrevious()
+    {
+        var component = dc.Instance as ICustomDynamicComponent;
+        dynamicComponentData = JToken.FromObject(component.GetValue());
+
+        var token = JToken.FromObject(new Envelope<JToken>(dynamicComponentData, true));
+        
+        await userTaskService.MarkAsCompleteDispatched(workflowInstanceId, userTask.Signal, token);
+        TaskFinished();
+    }
+    
+    private async Task Continue()
+    {
+        var component = dc.Instance as ICustomDynamicComponent;
+        dynamicComponentData = JToken.FromObject(component.GetValue());
+
+
+        var token = JToken.FromObject(new Envelope<JToken>(dynamicComponentData, false));
+        await userTaskService.MarkAsCompleteDispatched(workflowInstanceId, userTask.Signal, token);
+        TaskFinished();
+    }
+
+    private bool HasUserTask()
+    {
+        return userTask != null;
+    }
+
+    private async Task UpdateForNotification(WorkflowInstanceInfo notification)
+    {
+        latestNotification = notification;
+        if (notification.IsUsertask && !HasUserTask())
+        {
+            await LoadTask();
+        }
+        await InvokeAsync(() => { StateHasChanged(); });
+    }
+
+    private void TaskFinished()
+    {
+        userTask = null;
+    }
+
+    private async Task LoadTask()
+    {
+        workflowInstance = await userTaskService.GetUserTasksFor(workflowInstanceId);
+        userTask = workflowInstance?.UserTasks?.FirstOrDefault();
+    }
+
+    public async void Dispose()
+    {
+        await HubConnection.InvokeAsync("LeaveWorkflowInstanceGroup", workflowInstanceId);
+    }
+
+    private class WorkflowInstanceInfo
+    {
+        public string WorkflowInstanceId { get; set; }
+        public string WorkflowState { get; set; }
+        public string ActivityId { get; set; }
+        public string? ActivityName { get; set; }
+        public string Action { get; set; }
+        public bool IsUsertask { get; set; }
+        public string Description { get; set; }
+        private Dictionary<string,object> Metadata { get; set; }
+    }
+}
