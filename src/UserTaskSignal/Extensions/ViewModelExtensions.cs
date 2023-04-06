@@ -18,7 +18,7 @@ namespace UserTask.AddOns.Extensions
                 DefinitionId = x.DefinitionId,
                 UserTasks = x.ConvertToUserTaskViewModels(serverContext),
                 Metadata = x.Metadata,
-                CurrentActivityId = x.BlockingActivities.First().ActivityId
+                CurrentActivityId = x.BlockingActivities?.FirstOrDefault()?.ActivityId ?? x?.CurrentActivity?.ActivityId ?? string.Empty
             })
             );
             return result;
